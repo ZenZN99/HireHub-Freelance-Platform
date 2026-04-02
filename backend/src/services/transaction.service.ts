@@ -40,39 +40,59 @@ export class TransactionService {
     session.startTransaction();
 
     try {
+      // 1. جلب الـ Proposal
       const proposal = await this.proposalModel
         .findById(proposalId)
         .session(session);
+
       if (!proposal) throw new NotFoundException('Proposal not found');
 
-      const client = await this.userModel
+      // 2. جلب المشروع
+      const project = await this.projectModel
         .findById(proposal.projectId)
         .session(session);
+
+      if (!project) throw new NotFoundException('Project not found');
+
+      // 3. جلب العميل (صاحب المشروع)
+      const client = await this.userModel
+        .findById(project.clientId)
+        .session(session);
+
+      if (!client) throw new NotFoundException('Client not found');
+
+      // 4. جلب الفريلانسر
       const freelancer = await this.userModel
         .findById(proposal.freelancerId)
         .session(session);
 
-      if (!client) throw new NotFoundException('Client not found');
       if (!freelancer) throw new NotFoundException('Freelancer not found');
 
+      // 5. التحقق من الرصيد
       const amount = proposal.price;
-      if ((client.balance || 0) < amount)
-        throw new BadRequestException('Insufficient balance');
 
+      if ((client.balance || 0) < amount) {
+        throw new BadRequestException('Insufficient balance');
+      }
+
+      // 6. خصم الرصيد + تجميده
       client.balance -= amount;
       client.frozenBalance = (client.frozenBalance || 0) + amount;
 
       await client.save({ session });
 
+      // 7. تحديث حالة المشروع
       await this.projectModel.findByIdAndUpdate(
         proposal.projectId,
         { status: ProjectStatus.IN_PROGRESS },
         { session },
       );
 
+      // 8. إنهاء الترانزاكشن بنجاح
       await session.commitTransaction();
       session.endSession();
 
+      // 9. إرسال إشعار
       await this.notificationService.createNotification({
         receiverId: freelancer._id.toString(),
         senderId: client._id.toString(),
@@ -81,6 +101,7 @@ export class TransactionService {
         isRead: false,
       });
 
+      // 10. رجوع النتيجة
       return {
         success: true,
         frozenAmount: amount,
@@ -88,6 +109,7 @@ export class TransactionService {
         clientFrozenBalance: client.frozenBalance,
       };
     } catch (err) {
+      // في حال فشل أي خطوة
       await session.abortTransaction();
       session.endSession();
       throw err;
@@ -104,15 +126,13 @@ export class TransactionService {
         .session(session);
       if (!proposal) throw new NotFoundException('Proposal not found');
 
-      const client = await this.userModel
-        .findById(proposal.projectId)
-        .session(session);
       const freelancer = await this.userModel
         .findById(proposal.freelancerId)
         .session(session);
-      const project = await this.projectModel
-        .findById(proposal.projectId)
-        .session(session);
+
+      const project = await this.projectModel.findById(proposal.projectId);
+
+      const client = await this.userModel.findById(project!.clientId);
 
       if (!client || !freelancer || !project)
         throw new NotFoundException('Users or project not found');
